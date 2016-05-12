@@ -1,0 +1,154 @@
+---
+title: "Prediction Assignment Writeup"
+author: "Alberto Llamas"
+date: "05/09/ 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This project is carried out in the context of the Coursera Data Science Especialization. The README contains the information about it.
+
+## Obtaining and cleaning the data
+
+First I load the libraries I will nead, create a folder to dowload the data to and download the data into it.
+```{r message=FALSE}
+library("randomForest", lib.loc="~/R/win-library/3.3")
+library("caret", lib.loc="~/R/win-library/3.3")
+library("dplyr", lib.loc="~/R/win-library/3.3")
+library("MASS", lib.loc="C:/Program Files/R/R-3.3.0/library")
+if (!file.exists("data")){ 
+  dir.create("data")
+  }  
+trainUrl<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testUrl<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(trainUrl,destfile="data/train.csv")
+download.file(testUrl,destfile="data/test.csv")
+rm(list=ls())
+```
+
+Now I read the data and prepare it for treatment. 
+
+```{r results='hide'}
+fulldata<-read.csv("data/train.csv")
+summary(fulldata)
+```
+
+I know that when treating data, one is not suposed to use it all of them in order not to have results too depending on the data. However I decided to take a look at the test data frame to understand what was happening. As opossed to the test data, the train data have summaries from the full time window, for which it calculates additional information that can't, however, be used to predict since those predictor features do not exist in the test data. Therefore, the easiest way I found to get rid of those useless columns and rows is as follows:
+
+```{r results='hide'}
+testdatatmp<-read.csv("data/test.csv")
+summary(testdatatmp)
+```
+
+All variables having only 0 values in this data are interpreted as class logical, therefore I create an integer vecor to locate all those that aren't and I ectract them from the data.
+ 
+```{r results='hide'}
+useful<-which(sapply(testdatatmp, class) != "logical")
+fulldatadef<-dplyr::select(fulldata,useful)%>%rename(classe=problem_id)
+```
+
+When this summary values are calculated a new window starts, thus the easiest way I found to get rid of those rows is using the value of new_window, then I get rid of that column which is now superfluous. And I scaled the numeric data since this is useful for many 
+
+```{r}
+data<-fulldatadef[-grep("yes",fulldatadef$new_window),][,-6]
+data[,7:58]<-scale(data[,7:58])
+fullwindowdata<-fulldatadef[grep("yes",fulldatadef$new_window),][,-6] #I kept the data
+fullwindowdata[,7:58]<-scale(fullwindowdata[,7:58])#In case it could be usefull
+```
+
+I apply the same transformations on the test data so I'll be able to apply the predctions on it.
+
+```{r}
+testdata<-dplyr::select(testdatatmp,useful)[,-6] 
+testdata[,7:58]<-scale(testdata[,7:58])
+testdata<-testdata[,c(2,7:59)]#I wont use the other columns
+```
+
+Now it's time to select traing data, and a validation set to test the performance of the methods I pick on out of the sample data.Although I wont use it to predict since then the predictor wouldn't be usefull for other users, I keep the user_name variable to illustrate something.I'm not keeping columns 2 to 6, window number is irrelevant for any prediction out of the data provided, maybe the 3 "timestamp" features are relevant but in my interpretation, which might be wrong, the class of exercise should be predicted independently of the partial window of the execution, leaving this features could lead to the oposite.
+
+```{r}
+set.seed(131)
+intrain<-createDataPartition(data$classe,p=0.65,list=FALSE)
+traindata<-data[,c(2,7:59)][intrain,]
+valdata<-data[,c(2,7:59)][-intrain,]
+```
+
+## First attempt
+
+Since I've used before lda as opossed to other classification methods I've never used, and its components are interpretable, I first tried this option with little succes.
+
+```{r}
+modelfitlda<-train(traindata$classe~.,method="lda",data=traindata[,2:53])
+predlda<-predict(modelfitlda,valdata[,2:53])
+confusionMatrix(valdata$classe,predlda)
+```
+
+Then I tried preprocessing it with "pca" to see if I could improve my results but they were even worse.
+
+```{r}
+modelfitldapca<-train(traindata$classe~.,method="lda",preProcess="pca",data=traindata[,2:53])
+predldapca<-predict(modelfitldapca,valdata[,2:53])
+confusionMatrix(valdata$classe,predldapca)
+```
+
+To try and explain it I performed both analysis on the data, obtaining the scores on their first to components in both cases to plot them afterwards.
+
+```{r}
+pldaclas<-predict(lda(classe~.,traindata[,c(2:54)]))
+pldauser<-predict(lda(user_name~.,traindata[,c(1:53)]))
+pca<-princomp(traindata[,c(2:53)],scores=TRUE)
+```
+
+And plot them.
+
+```{r}
+par(mfrow=c(2,2),mar=c(2,2,2,2))
+plot(pca$scores[,1:2],col=traindata$classe,main="PCA col by classe",xlim=c(-6,6))
+plot(pca$scores[,1:2],col=traindata$user_name,main="PCA col by user_name",xlim=c(-6,6))
+plot(LD2~LD1,col=traindata$classe,data=pldaclas$x,main="LDA classe~.")
+plot(LD2~LD1,col=traindata$user_name,data=pldauser$x,main="LDA user_name~.")
+```
+
+**Figure 1 PCA and LDA plots of their first two components colored by class and by user**
+
+On the top 2 graphs we observe that the groups obtained by PCA's two most relevant components do not represent the class, since they are all completley mixed, when I color them by user, though, it seems what it does perform quite well is the separation into users.
+
+On the bottom two graphs what we observe is that LDA's two major components trying to predict classes do not achive a great separation into them, it seems classes A and B are shifted with respect to the rest, but just a little. When trying to predict the user on the other hand, the method is very good.
+
+** My interpretation is that the observed features depend in such a greater way on the user than on the exercise that these methods are not capable to clasify them, therefore a much powerfull method is needed**
+
+## Random forest.
+
+Random forest is one of the most commonly used prediction methods. It is a very powerful method so I expect a great out of the sample accuracy and little error.
+
+First in order to consume less memory and time while executing the random forest, I'll optimize the mtry parameter, the number of variables the method takes for each tree. In general this optimization may lead to overfitting, but after many runs, for this specific data, the results are similar.
+
+```{r}
+tuneRF(traindata[,2:53],traindata[,54],ntreeTry=200,trace=FALSE)
+```
+
+So I'll try mtry=7
+
+```{r}
+tc<-trainControl(seeds=1315)
+modelfitrf<- train(classe~.,method="rf",ntree=500,tuneGrid=data.frame(mtry=7),data=traindata[,2:54])
+predrf<-predict(modelfitrf,valdata[,2:53])
+confusionMatrix(valdata$classe,predrf)
+```
+
+As I rekoned, the accuracy is really high. Now, trying to get some information out of the results
+
+```{r}
+par(mfrow=c(1,2))
+plot(modelfitrf$finalModel)
+varImpPlot(modelfitrf$finalModel)
+```
+
+The first graph shows how the Out of bag estimated error for every class and for the total is stabilized arround 100 trees.The second one shows how 7 variables are much more impontant than the others.
+
+```{r}
+predict(modelfitrf,testdata[,2:54])
+```
